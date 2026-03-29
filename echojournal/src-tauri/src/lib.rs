@@ -1,9 +1,10 @@
 use dotenvy::dotenv;
 use std::env;
-use chrono::{Local, Datelike};
 use serde::{Deserialize, Serialize};
 use tauri::command;
 use tokio::time::{sleep, Duration};
+use chrono::{Local, Datelike, NaiveDate};
+
 
 #[derive(Serialize)]
 struct GeminiRequest {
@@ -39,6 +40,23 @@ struct ResponseContent {
 struct ResponsePart {
     text: String,
 }
+
+#[tauri::command]
+fn is_date_locked(target_date_str: String) -> Result<bool, String> {
+    let now = Local::now().date_naive();
+    
+    // Parse the date we are trying to write to (Format: YYYY-MM-DD)
+    let target_date = NaiveDate::parse_from_str(&target_date_str, "%Y-%m-%d")
+        .map_err(|_| "Invalid date format".to_string())?;
+
+    // Calculate the difference
+    let diff = now.signed_duration_since(target_date).num_days();
+
+    // If the date is more than 7 days in the past, it's locked.
+    // Also lock if the date is in the future (preventing time travel).
+    Ok(diff > 7 || diff < 0)
+}
+
 
 #[command]
 async fn refine_thought(input: String) -> Result<String, String> {
@@ -96,7 +114,10 @@ async fn refine_thought(input: String) -> Result<String, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![refine_thought]) // Update the handler
+        .invoke_handler(tauri::generate_handler![
+            refine_thought, 
+            is_date_locked
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
