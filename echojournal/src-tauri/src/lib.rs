@@ -5,6 +5,7 @@ use tauri::command;
 use tokio::time::{sleep, Duration};
 use chrono::{Local, Datelike, NaiveDate};
 mod tags;
+pub mod export;
 
 #[derive(Serialize)]
 struct GeminiRequest { contents: Vec<Content>, }
@@ -43,7 +44,6 @@ pub struct RawEntry {
 
 #[tauri::command]
 async fn get_all_entries(journal_path: String) -> Result<Vec<RawEntry>, String> {
-    println!("Scanning path: {}", journal_path);
     use std::fs;
     use std::path::Path;
 
@@ -58,7 +58,6 @@ async fn get_all_entries(journal_path: String) -> Result<Vec<RawEntry>, String> 
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let file_path = entry.path();
-        println!("Reading file: {:?}", file_path);
         if file_path.extension().and_then(|s| s.to_str()) == Some("md") {
             let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
             
@@ -88,7 +87,6 @@ async fn get_all_entries(journal_path: String) -> Result<Vec<RawEntry>, String> 
                         } else {
                             (rest.trim().to_string(), "Uncategorized".to_string())
                         };
-                        println!("Found entry: {} at {}", text, time);
                         all_entries.push(RawEntry { date: date.clone(), time, text, tag });
                     }
                 }
@@ -208,11 +206,40 @@ async fn refine_thought(input: String, settings_json: String) -> Result<RefinedO
     Ok(output)
 }
 
+#[tauri::command]
+async fn export_journal(
+    format: String, 
+    entries: Vec<RawEntry>, 
+    app: tauri::AppHandle
+    ) -> Result<String, String> {   
+    use tauri_plugin_dialog::DialogExt;
+
+    let file_path = app.dialog()
+        .file()
+        .set_title("Select Export Location")
+        .set_file_name(&format!("My_EchoJournal.{}", format))
+        .blocking_save_file();
+
+    let path = match file_path {
+        Some(p) => p.as_path().unwrap().to_string_lossy().to_string(),
+        None => return Ok("Export cancelled".into()),
+    };
+
+    if format == "pdf" {
+        export::generate_pdf(entries, path)?;
+    } else {
+        export::generate_docx(entries, path)?;
+    }
+
+    Ok("Export Complete".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked, get_all_entries, ask_oracle])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked, get_all_entries, ask_oracle, export_journal])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -4,6 +4,7 @@ import { readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { documentDir, join } from '@tauri-apps/api/path';
 import ReactMarkdown from 'react-markdown';
 import { FileText, ChevronRight } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 
 export default function TimelineExplorer() {
   const [files, setFiles] = useState<string[]>([]);
@@ -34,6 +35,22 @@ export default function TimelineExplorer() {
     setSelectedFile(name);
   };
 
+  const handleExport = async (format: 'pdf' | 'docx') => {
+    try {
+      const docsPath = await documentDir();
+      const journalPath = await join(docsPath, 'EchoJournal');
+      const history = await invoke('get_all_entries', { journalPath });
+      const result = await invoke<string>('export_journal', { 
+        format, 
+        entries: history 
+      });
+  
+      console.log(result);
+    } catch (err) {
+      console.error("Export failed:", err);
+    }
+  };
+
   return (
     <div className="flex w-full h-full gap-8 animate-in slide-in-from-bottom-4 duration-500">
       {/* File List */}
@@ -53,12 +70,37 @@ export default function TimelineExplorer() {
       </div>
 
       {/* Markdown View */}
+      
       <div className="flex-1 overflow-y-auto bg-slate-900/10 rounded-3xl p-10 border border-slate-800/30 shadow-2xl">
         {selectedFile ? (
             <div className="max-w-3xl mx-auto">
             <header className="mb-12 border-b border-slate-800 pb-6 flex justify-between items-end">
                 <h2 className="text-3xl font-black tracking-tighter text-white">{selectedFile.replace('.md', '')}</h2>
                 <span className="text-xs font-mono text-slate-500">Archive Node</span>
+                <div className="flex flex-col gap-2">
+                  <p className="text-[10px] text-slate-500 font-mono mb-2 uppercase tracking-widest">
+                    Export Options
+                  </p>
+                  <div className="flex gap-3">
+                    {/* DOCX is the safest bet for a demo - no font dependencies! */}
+                    <button 
+                      onClick={() => handleExport('docx')} 
+                      className="flex-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 py-3 rounded-xl transition-all text-xs font-bold"
+                    >
+                      GENERATE DOCX
+                    </button>
+
+                    <button 
+                      onClick={() => handleExport('pdf')} 
+                      className="flex-1 bg-slate-800/50 hover:bg-slate-800 text-slate-400 border border-slate-700 py-3 rounded-xl transition-all text-xs font-bold"
+                    >
+                      GENERATE PDF
+                    </button>
+                  </div>
+                  <p className="text-[9px] text-slate-600 italic">
+                    * PDF requires font embedding; DOCX is recommended for editing.
+                  </p>
+                </div>
             </header>
 
             <div className="prose prose-invert max-w-none 
