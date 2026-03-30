@@ -3,13 +3,15 @@ import { useEffect, useState } from 'react';
 import { readDir, readTextFile } from '@tauri-apps/plugin-fs';
 import { documentDir, join } from '@tauri-apps/api/path';
 import ReactMarkdown from 'react-markdown';
-import { FileText, ChevronRight } from 'lucide-react';
+import { FileText, ChevronRight, Download, ChevronDown, FileJson, CheckCircle2 } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 
 export default function TimelineExplorer() {
   const [files, setFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string>("");
+  const [isOpen, setIsOpen] = useState(false);
+  const [status, setStatus] = useState('');
 
   useEffect(() => {
     const fetchFiles = async () => {
@@ -77,30 +79,51 @@ export default function TimelineExplorer() {
             <header className="mb-12 border-b border-slate-800 pb-6 flex justify-between items-end">
                 <h2 className="text-3xl font-black tracking-tighter text-white">{selectedFile.replace('.md', '')}</h2>
                 <span className="text-xs font-mono text-slate-500">Archive Node</span>
-                <div className="flex flex-col gap-2">
-                  <p className="text-[10px] text-slate-500 font-mono mb-2 uppercase tracking-widest">
-                    Export Options
-                  </p>
-                  <div className="flex gap-3">
-                    {/* DOCX is the safest bet for a demo - no font dependencies! */}
-                    <button 
-                      onClick={() => handleExport('docx')} 
-                      className="flex-1 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/20 py-3 rounded-xl transition-all text-xs font-bold"
-                    >
-                      GENERATE DOCX
-                    </button>
+                <div className="relative inline-block text-left">
+      <div>
+        <button
+          onClick={() => setIsOpen(!isOpen)}
+          className="flex items-center gap-2 bg-slate-900 border border-slate-800 hover:border-blue-500/50 text-slate-300 px-4 py-2.5 rounded-xl transition-all text-xs font-bold tracking-widest shadow-xl"
+        >
+          <Download size={14} className="text-blue-400" />
+          EXPORT 
+          <ChevronDown size={14} className={`transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+      </div>
 
-                    <button 
-                      onClick={() => handleExport('pdf')} 
-                      className="flex-1 bg-slate-800/50 hover:bg-slate-800 text-slate-400 border border-slate-700 py-3 rounded-xl transition-all text-xs font-bold"
-                    >
-                      GENERATE PDF
-                    </button>
-                  </div>
-                  <p className="text-[9px] text-slate-600 italic">
-                    * PDF requires font embedding; DOCX is recommended for editing.
-                  </p>
-                </div>
+      {isOpen && (
+        <>
+          {/* Invisible backdrop to close dropdown when clicking outside */}
+          <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)}></div>
+          
+          <div className="absolute right-0 mt-2 w-48 origin-top-right rounded-2xl bg-slate-900 border border-slate-800 shadow-2xl ring-1 ring-black ring-opacity-5 focus:outline-none z-20 animate-in fade-in zoom-in-95 duration-200">
+            <div className="p-2 space-y-1">
+              <button
+                onClick={() => handleExport('docx')}
+                className="flex w-full items-center gap-3 px-3 py-3 text-xs font-medium text-slate-300 hover:bg-blue-600/10 hover:text-blue-400 rounded-lg transition-colors"
+              >
+                <FileText size={16} />
+                DOCX
+              </button>
+              
+              <button
+                onClick={() => handleExport('pdf')}
+                className="flex w-full items-center gap-3 px-3 py-3 text-xs font-medium text-slate-300 hover:bg-red-600/10 hover:text-red-400 rounded-lg transition-colors"
+              >
+                <FileJson size={16} />
+                PDF
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {status && (
+        <p className="absolute top-12 left-0 w-full text-[10px] text-blue-500 font-mono animate-pulse text-center">
+          {status}
+        </p>
+      )}
+    </div>
             </header>
 
             <div className="prose prose-invert max-w-none 
