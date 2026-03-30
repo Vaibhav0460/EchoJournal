@@ -33,6 +33,127 @@ pub struct RefinedOutput {
     pub tag: String,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RawEntry {
+    pub date: String,
+    pub time: String,
+    pub text: String,
+    pub tag: String,
+}
+
+#[tauri::command]
+async fn get_all_entries(journal_path: String) -> Result<Vec<RawEntry>, String> {
+    println!("Scanning path: {}", journal_path);
+    use std::fs;
+    use std::path::Path;
+
+    let path = Path::new(&journal_path);
+    if !path.exists() {
+        return Ok(vec![]);
+    }
+
+    let mut all_entries = Vec::new();
+    let entries = fs::read_dir(path).map_err(|e| e.to_string())?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let file_path = entry.path();
+        println!("Reading file: {:?}", file_path);
+        if file_path.extension().and_then(|s| s.to_str()) == Some("md") {
+            let content = fs::read_to_string(&file_path).map_err(|e| e.to_string())?;
+            
+            // --- FIX 1: Use proper string splitting ---
+            // We split by "### " to find the day blocks
+            let days = content.split("### ").filter(|s| !s.trim().is_empty());
+
+            for day_block in days {
+                let lines: Vec<&str> = day_block.lines().collect();
+                if lines.is_empty() { continue; }
+
+                // The first line is now just the date (since "### " was removed by split)
+                let date = lines[0].trim().to_string();
+
+                for line in lines.iter().skip(1) {
+                    if line.starts_with("- **") {
+                        let parts: Vec<&str> = line.split("**: ").collect();
+                        if parts.len() < 2 { continue; }
+
+                        let time = parts[0].replace("- **", "").trim().to_string();
+                        let rest = parts[1];
+
+                        // Separate text and tag
+                        let tag_split: Vec<&str> = rest.rsplitn(2, " #").collect();
+                        let (text, tag) = if tag_split.len() == 2 {
+                            (tag_split[1].trim().to_string(), tag_split[0].trim().to_string())
+                        } else {
+                            (rest.trim().to_string(), "Uncategorized".to_string())
+                        };
+                        println!("Found entry: {} at {}", text, time);
+                        all_entries.push(RawEntry { date: date.clone(), time, text, tag });
+                    }
+                }
+            }
+        }
+    }
+
+    all_entries.sort_by(|a, b| a.date.cmp(&b.date).then(a.time.cmp(&b.time)));
+    Ok(all_entries)
+}
+
+#[tauri::command]
+async fn ask_oracle(question: String, journal_data: String) -> Result<String, String> {
+    dotenv().ok();
+    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "Key not found".to_string())?;
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+        api_key
+    );
+
+    let prompt = format!(
+        "SYSTEM: You are the 'Echo Oracle'. Answer using ONLY the provided JSON data. 
+         CITATIONS: cite (YYYY-MM-DD, #Tag).
+         DATA: {}
+         USER QUESTION: {}",
+        journal_data, question
+    );
+
+    let body = GeminiRequest {
+        contents: vec![Content { parts: vec![Part { text: prompt }] }],
+    };
+
+    let client = reqwest::Client::new();
+    let res = client.post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network Error: {}", e))?;
+
+    // --- NEW: Check status before decoding ---
+    let res = client.post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network Error: {}", e))?;
+
+    // --- FIX: Capture status code before consuming the response ---
+    if !res.status().is_success() {
+        let status = res.status(); // Capture status first
+        let err_text = res.text().await.unwrap_or_default(); // Now consume the body
+        return Err(format!("Gemini API Error ({}): {}", status, err_text));
+    }
+
+    // Since we didn't return an error, we now consume the body as JSON
+    let json: GeminiResponse = res.json().await.map_err(|e| format!("JSON Decode Error: {}", e))?;
+    
+    // Check if candidates exist (Gemini sometimes returns empty if it blocks the prompt)
+    if json.candidates.is_empty() || json.candidates[0].content.parts.is_empty() {
+        return Ok("The Oracle is clouded. The AI refused to generate a response for this query.".to_string());
+    }
+
+    Ok(json.candidates[0].content.parts[0].text.trim().to_string())
+}
+
 #[tauri::command]
 fn is_date_locked(target_date_str: String) -> Result<bool, String> {
     let now = Local::now().date_naive();
@@ -49,7 +170,10 @@ async fn refine_thought(input: String, settings_json: String) -> Result<RefinedO
     let api_key = env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not found".to_string())?;
     
     let tag_list: Vec<String> = tags::get_tag_registry().iter().map(|t| t.id.clone()).collect();
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", api_key);
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+        api_key
+    );
 
     let prompt = format!(
         "USER_SETTINGS: {settings}
@@ -88,7 +212,7 @@ async fn refine_thought(input: String, settings_json: String) -> Result<RefinedO
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked])
+        .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked, get_all_entries, ask_oracle])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

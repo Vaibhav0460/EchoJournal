@@ -1,14 +1,41 @@
 'use client';
 import { useState } from 'react';
-import { MessageSquare, Library, Settings, User } from 'lucide-react';
+import { MessageSquare, Library, Settings, User, Sparkles } from 'lucide-react';
 import CommandBar from '@/components/CommandBar';
 import TimelineExplorer from '@/components/TimelineExplorer';
 import RecentEchoes from '@/components/RecentEchoes';
 import ProfileSettings from '@/components/ProfileSettings';
+import { invoke } from '@tauri-apps/api/core';
+import { documentDir, join } from '@tauri-apps/api/path';
+import Oracle from '@/components/Oracle';
+
+interface RawEntry {
+  date: string;
+  time: string;
+  text: string;
+  tag: string;
+}
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<'chat' | 'timeline' | 'profile'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'timeline' | 'profile' | 'oracle'>('chat');
   const [refresh, setRefresh] = useState(0);
+  
+  const runAggregatorTest = async () => {
+    try {
+      const docsPath = await documentDir();
+      const journalPath = await join(docsPath, 'EchoJournal');
+      
+      console.log("Fetching from:", journalPath);
+      
+      // Call the Rust command
+      const history = await invoke('get_all_entries', { journalPath });
+      
+      console.log("✅ Aggregator Success!");
+      console.table(history); // This prints a nice table in the console
+    } catch (error) {
+      console.error("❌ Aggregator Failed:", error);
+    }
+  };
 
   return (
     <main className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
@@ -28,6 +55,12 @@ export default function Home() {
           className={`p-3 rounded-xl transition-all ${activeView === 'timeline' ? 'bg-blue-600/20 text-blue-400' : 'text-slate-500 hover:text-white'}`}
         >
           <Library size={24} />
+        </button>
+        <button 
+          onClick={() => setActiveView('oracle')}
+          className={`p-3 rounded-xl transition-all ${activeView === 'oracle' ? 'bg-purple-600/20 text-purple-400' : 'text-slate-500 hover:text-white'}`}
+        >
+          <Sparkles size={24} />
         </button>
 
         <button 
@@ -51,6 +84,8 @@ export default function Home() {
         {activeView === 'timeline' && <TimelineExplorer />}
 
         {activeView === 'profile' && <ProfileSettings />}
+
+        {activeView === 'oracle' && <Oracle />}
       </section>
     </main>
   );
