@@ -4,120 +4,91 @@ use serde::{Deserialize, Serialize};
 use tauri::command;
 use tokio::time::{sleep, Duration};
 use chrono::{Local, Datelike, NaiveDate};
-
-
-#[derive(Serialize)]
-struct GeminiRequest {
-    contents: Vec<Content>,
-}
+mod tags;
 
 #[derive(Serialize)]
-struct Content {
-    parts: Vec<Part>,
-}
+struct GeminiRequest { contents: Vec<Content>, }
 
 #[derive(Serialize)]
-struct Part {
-    text: String,
-}
+struct Content { parts: Vec<Part>, }
+
+#[derive(Serialize)]
+struct Part { text: String, }
 
 #[derive(Deserialize)]
-struct GeminiResponse {
-    candidates: Vec<Candidate>,
-}
+struct GeminiResponse { candidates: Vec<Candidate>, }
 
 #[derive(Deserialize)]
-struct Candidate {
-    content: ResponseContent,
-}
+struct Candidate { content: ResponseContent, }
 
 #[derive(Deserialize)]
-struct ResponseContent {
-    parts: Vec<ResponsePart>,
-}
+struct ResponseContent { parts: Vec<ResponsePart>, }
 
 #[derive(Deserialize)]
-struct ResponsePart {
-    text: String,
+struct ResponsePart { text: String, }
+
+#[derive(Serialize, Deserialize)]
+pub struct RefinedOutput {
+    pub text: String,
+    pub tag: String,
 }
 
 #[tauri::command]
 fn is_date_locked(target_date_str: String) -> Result<bool, String> {
     let now = Local::now().date_naive();
-    
-    // Parse the date we are trying to write to (Format: YYYY-MM-DD)
     let target_date = NaiveDate::parse_from_str(&target_date_str, "%Y-%m-%d")
         .map_err(|_| "Invalid date format".to_string())?;
-
-    // Calculate the difference
     let diff = now.signed_duration_since(target_date).num_days();
-
-    // If the date is more than 7 days in the past, it's locked.
-    // Also lock if the date is in the future (preventing time travel).
     Ok(diff > 7 || diff < 0)
 }
 
 
-#[command]
-async fn refine_thought(input: String) -> Result<String, String> {
+#[tauri::command]
+async fn refine_thought(input: String, settings_json: String) -> Result<RefinedOutput, String> {
     dotenv().ok();
-    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "Key not found".to_string())?;
+    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not found".to_string())?;
+    
+    let tag_list: Vec<String> = tags::get_tag_registry().iter().map(|t| t.id.clone()).collect();
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}", api_key);
 
-    // Switching to the Stable 2.5 Flash model for reliability
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        api_key
+    let prompt = format!(
+        "USER_SETTINGS: {settings}
+         VALID_TAGS: {tags:?}
+
+         GOAL: Process the journal entry.
+         1. LITERAL MODE: If input is in quotes, return text exactly as is (no quotes).
+         2. REFINED MODE: If no quotes, rewrite as a 1-sentence bullet point using the tone specified in USER_SETTINGS for the detected tag.
+         3. CATEGORIZATION: Select the most appropriate tag from VALID_TAGS.
+
+         RETURN JSON ONLY: {{\"text\": \"...\", \"tag\": \"...\"}}
+         INPUT: {input}",
+        settings = settings_json,
+        tags = tag_list,
+        input = input
     );
 
     let client = reqwest::Client::new();
-    let prompt = format!(
-        "Refine into ONE concise, professional bullet point starting with an active verb. No bolding. No intro. Input: {}",
-        input
-    );
+    let res = client.post(&url).json(&GeminiRequest {
+        contents: vec![Content { parts: vec![Part { text: prompt }] }]
+    }).send().await.map_err(|e| e.to_string())?;
 
-    let body = GeminiRequest {
-        contents: vec![Content {
-            parts: vec![Part { text: prompt }],
-        }],
-    };
+    let json: GeminiResponse = res.json().await.map_err(|e| e.to_string())?;
+    let raw_output = json.candidates[0].content.parts[0].text.trim();
+    
+    
+    let clean_json = raw_output.trim_start_matches("```json").trim_end_matches("```").trim();
 
-    // --- Simple Retry Logic ---
-    let mut attempts = 0;
-    let max_attempts = 2;
+    let output: RefinedOutput = serde_json::from_str(clean_json)
+        .map_err(|_| format!("AI Parse Error: {}", clean_json))?;
 
-    while attempts < max_attempts {
-        let res = client.post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let status = res.status();
-        
-        if status.is_success() {
-            let json: GeminiResponse = res.json().await.map_err(|e| e.to_string())?;
-            return Ok(json.candidates[0].content.parts[0].text.trim().to_string());
-        } else if status.as_u16() == 503 && attempts < max_attempts - 1 {
-            attempts += 1;
-            sleep(Duration::from_secs(2)).await; // Wait 2s before retrying
-            continue;
-        } else {
-            let err_text = res.text().await.unwrap_or_default();
-            return Err(format!("API Error ({}): {}", status, err_text));
-        }
-    }
-
-    Err("Failed after multiple retries due to high demand.".into())
+    Ok(output)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
-        .invoke_handler(tauri::generate_handler![
-            refine_thought, 
-            is_date_locked
-        ])
+        .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

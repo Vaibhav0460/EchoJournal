@@ -1,12 +1,13 @@
 'use client';
 import { useState } from 'react';
-import { MessageSquare, Library, Settings } from 'lucide-react';
+import { MessageSquare, Library, Settings, User } from 'lucide-react';
 import CommandBar from '@/components/CommandBar';
 import TimelineExplorer from '@/components/TimelineExplorer';
 import RecentEchoes from '@/components/RecentEchoes';
+import ProfileSettings from '@/components/ProfileSettings';
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<'chat' | 'timeline'>('chat');
+  const [activeView, setActiveView] = useState<'chat' | 'timeline' | 'profile'>('chat');
   const [refresh, setRefresh] = useState(0);
 
   return (
@@ -29,24 +30,27 @@ export default function Home() {
           <Library size={24} />
         </button>
 
-        <div className="mt-auto opacity-20">
-          <Settings size={24} />
-        </div>
+        <button 
+          onClick={() => setActiveView('profile')}
+          className={`p-3 rounded-xl transition-all ${activeView === 'profile' ? 'bg-blue-600/20 text-blue-400' : 'text-slate-500 hover:text-white'}`}
+        >
+          <User size={24} />
+        </button>
       </nav>
 
       {/* --- MAIN CONTENT --- */}
       <section className="flex-1 flex flex-col items-center justify-center p-8 relative overflow-y-auto">
-      {activeView === 'chat' ? (
-        <div className="w-full max-w-2xl flex flex-col items-center">
-          <h2 className="text-sm font-mono mb-8 text-slate-500 uppercase tracking-[0.3em]">System.Ready</h2>
-          <CommandBar onEntrySaved={() => setRefresh(r => r + 1)} />
-          
-          {/* The new 5-entry limit view */}
-          <RecentEchoes refreshTrigger={refresh} />
-        </div>
-      ) : (
-        <TimelineExplorer />
-      )}
+      {activeView === 'chat' && (
+          <div className="w-full max-w-2xl flex flex-col items-center animate-in fade-in zoom-in duration-300">
+             <h2 className="text-xs font-mono mb-12 text-slate-500 uppercase tracking-[0.4em]">Neural.Interface.Active</h2>
+             <CommandBar onEntrySaved={() => setRefresh(r => r + 1)} />
+             <RecentEchoes refreshTrigger={refresh} />
+          </div>
+        )}
+
+        {activeView === 'timeline' && <TimelineExplorer />}
+
+        {activeView === 'profile' && <ProfileSettings />}
       </section>
     </main>
   );

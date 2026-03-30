@@ -1,128 +1,93 @@
 'use client';
-import { useState, useEffect, useMemo } from 'react';
-import { writeTextFile, readTextFile, exists, mkdir } from '@tauri-apps/plugin-fs'; // Add mkdir
+import { useState, useMemo } from 'react';
+import { writeTextFile, readTextFile, exists, mkdir } from '@tauri-apps/plugin-fs';
 import { documentDir, join } from '@tauri-apps/api/path';
 import { invoke } from '@tauri-apps/api/core';
+import { useSettings } from '@/hooks/useSettings';
+import { loadSettings } from '@/lib/settings';
 
 export default function CommandBar({ onEntrySaved }: { onEntrySaved: () => void }) {
   const [input, setInput] = useState('');
-  const [status, setStatus] = useState('Ready to echo...');
+  const [status, setStatus] = useState('System ready...');
   const [debugDate, setDebugDate] = useState(new Date().toISOString().split('T')[0]);
+  const { settings } = useSettings();
 
   const { minDate, maxDate } = useMemo(() => {
     const today = new Date();
-    const max = today.toISOString().split('T')[0];
     const minD = new Date();
     minD.setDate(today.getDate() - 7);
-    const min = minD.toISOString().split('T')[0];
-    
-    return { minDate: min, maxDate: max };
+    return { 
+      minDate: minD.toISOString().split('T')[0], 
+      maxDate: today.toISOString().split('T')[0] 
+    };
   }, []);
-  
+
   const handleJournalEntry = async (e: React.KeyboardEvent) => {
     if (e.key !== 'Enter' || !input.trim()) return;
-    setStatus('Processing...');
-
-    
+    setStatus('Analyzing...');
 
     try {
-      // 1. Guardrail Check
+      const currentSettings = await loadSettings();
       const isLocked = await invoke<boolean>('is_date_locked', { targetDateStr: debugDate });
       if (isLocked) {
-        setStatus("🚫 Guardrail Active: Date is locked.");
+        setStatus("🚫 Locked");
         return;
       }
-  
-      // 2. Content Preparation
-      const isLiteral = input.startsWith('"') && input.endsWith('"');
-      const finalContent = isLiteral ? input.slice(1, -1).trim() : await invoke<string>('refine_thought', { input });
-  
-      // 3. File Path Logic
-      const [year, month, day] = debugDate.split('-');
+
+      // AI returns both the text and the auto-detected tag
+      const refined = await invoke<{ text: string, tag: string }>('refine_thought', { 
+        input, 
+        settingsJson: JSON.stringify(currentSettings) 
+      });
+
+      const [year, month] = debugDate.split('-');
       const fileName = `${year}-${month}.md`;
       const docsPath = await documentDir();
-      const journalDir = await join(docsPath, 'EchoJournal');
-      const filePath = await join(journalDir, fileName);
+      const filePath = await join(docsPath, 'EchoJournal', fileName);
 
-      const now = new Date();
-      const todayDate = now.toISOString().split('T')[0];
-      let timestampLabel: string;
-
-      if (debugDate < todayDate) {
-        timestampLabel = "Future Self";
-      } else if (debugDate > todayDate) {
-        timestampLabel = "Prescient Self";
-      } else {
-        timestampLabel = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      if (!(await exists(await join(docsPath, 'EchoJournal')))) {
+        await mkdir(await join(docsPath, 'EchoJournal'));
       }
-      
-      const newEntryLine = `- **${timestampLabel}**: ${finalContent}`;
-  
-      if (!(await exists(journalDir))) await mkdir(journalDir);
-  
-      // 4. THE PARSER (Treating Markdown as a Map)
+
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      // Saving with the hashtag for easy searching later
+      const newEntryLine = `- **${timestamp}**: ${refined.text} #${refined.tag}`;
+
       let rawContent = (await exists(filePath)) ? await readTextFile(filePath) : "";
-      
-      // Split content by headers, keeping the headers in the result
-      const sections = rawContent.split(/(?=### \d{4}-\d{2}-\d{2})/).filter(s => s.trim() !== "");
-      
-      // Create a Map of Date -> Content
+      const sections = rawContent.split(/(?=### \d{4}-\d{2}-\d{2})/).filter(s => s.trim());
       const journalMap = new Map<string, string>();
-      sections.forEach(section => {
-        const match = section.match(/### (\d{4}-\d{2}-\d{2})/);
-        if (match) {
-          journalMap.set(match[1], section.replace(match[0], "").trim());
-        }
+      
+      sections.forEach(s => {
+        const date = s.match(/### (\d{4}-\d{2}-\d{2})/)?.[1];
+        if (date) journalMap.set(date, s.split('\n').slice(1).join('\n').trim());
       });
-  
-      // 5. UPDATE & SORT
-      const existingEntries = journalMap.get(debugDate) || "";
-      journalMap.set(debugDate, existingEntries + (existingEntries ? "\n" : "") + newEntryLine);
-  
-      // Sort dates chronologically
-      const sortedDates = Array.from(journalMap.keys()).sort();
-  
-      // 6. SERIALIZE & OVERWRITE
-      let finalMarkdown = "";
-        sortedDates.forEach((date, index) => {
-        // If it's not the first date in the file, add a separator
-        const separator = index === 0 ? "" : "\n\n---\n\n";
-        
-        finalMarkdown += `${separator}### ${date}\n\n${journalMap.get(date)}\n\n`;
-      });
-  
-      await writeTextFile(filePath, finalMarkdown.trim());
+
+      const existing = journalMap.get(debugDate) || "";
+      journalMap.set(debugDate, existing + (existing ? "\n" : "") + newEntryLine);
+
+      const sorted = Array.from(journalMap.keys()).sort();
+      const finalMd = sorted.map((d, i) => `${i === 0 ? "" : "\n\n---\n\n"}### ${d}\n\n${journalMap.get(d)}`).join("");
+
+      await writeTextFile(filePath, finalMd.trim());
       onEntrySaved();
       setInput('');
-      setStatus(`Echoed to ${debugDate}.`);
+      setStatus(`Saved to #${refined.tag}`);
     } catch (err) {
       setStatus(`Error: ${err}`);
     }
   };
 
   return (
-    <div className="w-full max-w-2xl space-y-4">
-      <div className="flex gap-2 items-center bg-slate-900 border border-slate-700 p-2 rounded-xl focus-within:ring-2 focus-within:ring-blue-500 transition-all">
-        {/* The "Time Travel" Debugger */}
-        <input 
-          type="date" 
-          value={debugDate}
-          min={minDate}
-          max={maxDate}
+    <div className="w-full max-w-2xl">
+      <div className="flex gap-2 items-center bg-slate-900 border border-slate-700 p-2 rounded-2xl focus-within:ring-2 focus-within:ring-blue-500">
+        <input type="date" value={debugDate} min={minDate} max={maxDate} 
           onChange={(e) => setDebugDate(e.target.value)}
-          className="bg-slate-800 text-xs text-slate-400 p-2 rounded border-none focus:outline-none cursor-pointer hover:text-white"
-        />
-        
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleJournalEntry}
-          placeholder="Type a thought..."
-          className="flex-1 bg-transparent text-slate-100 p-2 focus:outline-none font-mono"
-        />
+          className="bg-slate-800 text-xs text-slate-400 p-2 rounded-lg cursor-pointer" />
+        <input type="text" value={input} onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleJournalEntry} placeholder="Echo a thought..."
+          className="flex-1 bg-transparent p-2 focus:outline-none font-mono text-slate-100" />
       </div>
-      <p className="text-xs text-slate-500 ml-2 italic">{status}</p>
+      <p className="text-[10px] text-slate-600 mt-2 ml-2 uppercase tracking-widest">{status}</p>
     </div>
   );
 }
