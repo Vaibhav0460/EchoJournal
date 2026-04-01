@@ -223,14 +223,6 @@ async fn sync_vectors(journal_path: String, app_handle: tauri::AppHandle) -> Res
     }
 }
 
-// Simple math for vector comparison
-fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
-    let dot_product: f32 = v1.iter().zip(v2).map(|(a, b)| a * b).sum();
-    let mag1: f32 = v1.iter().map(|a| a * a).sum::<f32>().sqrt();
-    let mag2: f32 = v2.iter().map(|a| a * a).sum::<f32>().sqrt();
-    dot_product / (mag1 * mag2)
-}
-
 #[tauri::command]
 fn is_date_locked(target_date_str: String) -> Result<bool, String> {
     let now = Local::now().date_naive();

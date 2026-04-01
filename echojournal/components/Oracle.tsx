@@ -31,13 +31,8 @@ export default function Oracle() {
     setMessages(prev => [...prev, { role: 'user', content: userQuestion }]);
 
     try {
-      const docsPath = await documentDir();
-      const journalPath = await join(docsPath, 'EchoJournal');
-      const history = await invoke('get_all_entries', { journalPath });
-      
       const response = await invoke<string>('ask_oracle', { 
-        question: userQuestion, 
-        journalData: JSON.stringify(history) 
+        question: userQuestion
       });
 
       // Start the reveal
