@@ -25,9 +25,21 @@ tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-fs = "2"
 chrono = "0.4.44"
-reqwest = { version = "0.13.2", features = ["json"] }
 dotenvy = "0.15"
 tokio = { version = "1", features = ["full"] }
 genpdf = "0.2.0"
 docx-rs = "0.4.19"
 tauri-plugin-dialog = "2.0.0"
+
+# 1. Let fastembed handle the heavy lifting. 
+# The 'ort-download-binaries' feature is the "magic button" here.
+fastembed = { version = "4.2.0", features = ["ort-download-binaries"] }
+
+# 2. REMOVE the manual 'ort' dependency entirely.
+# If you need 'ort' types in your code, you can access them via 'fastembed::ort'.
+
+# 3. Rest of your local-first stack
+rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json"] }
+
+notify = "6.1.1"

@@ -1,6 +1,6 @@
 'use client';
-import { useState } from 'react';
-import { MessageSquare, Library, Settings, User, Sparkles } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { MessageSquare, Library, Settings, User, Sparkles, Loader2 } from 'lucide-react';
 import CommandBar from '@/components/CommandBar';
 import TimelineExplorer from '@/components/TimelineExplorer';
 import RecentEchoes from '@/components/RecentEchoes';
@@ -19,6 +19,7 @@ interface RawEntry {
 export default function Home() {
   const [activeView, setActiveView] = useState<'chat' | 'timeline' | 'profile' | 'oracle'>('chat');
   const [refresh, setRefresh] = useState(0);
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
   
   const runAggregatorTest = async () => {
     try {
@@ -36,6 +37,28 @@ export default function Home() {
       console.error("❌ Aggregator Failed:", error);
     }
   };
+
+  // --- STARTUP SYNC TRIGGER ---
+  useEffect(() => {
+    const runStartupSync = async () => {
+      try {
+        setSyncStatus("Syncing...");
+        const docsPath = await documentDir();
+        const journalPath = await join(docsPath, 'EchoJournal');
+        
+        // Triggers your Rust 'sync_vectors' function
+        const result = await invoke<string>('sync_vectors', { journalPath });
+        
+        console.log("Background Sync:", result);
+        setSyncStatus(null); // Clear status on success
+      } catch (error) {
+        console.error("Startup Sync Failed:", error);
+        setSyncStatus("Sync Failed");
+      }
+    };
+
+    runStartupSync();
+  }, []); // Empty dependency array ensures this runs once on start/refresh
 
   return (
     <main className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden">
