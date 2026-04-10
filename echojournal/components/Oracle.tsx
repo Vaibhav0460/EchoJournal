@@ -15,6 +15,7 @@ export default function Oracle() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [isLocalMode, setIsLocalMode] = useState(false);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -22,20 +23,22 @@ export default function Oracle() {
 
   const handleAsk = async () => {
     if (!query.trim() || loading) return;
-
+  
     const userQuestion = query;
     setQuery('');
     setLoading(true);
-    
-    // Add User Question
     setMessages(prev => [...prev, { role: 'user', content: userQuestion }]);
-
+  
     try {
+      // 🔥 REMOVED: const docsPath = await documentDir();
+      // 🔥 REMOVED: const allEntries = await get_all_entries(await join(docsPath, 'EchoJournal'));
+  
+      // Updated Invoke: Only send the question and the new 'useLocal' flag
       const response = await invoke<string>('ask_oracle', { 
-        question: userQuestion
+        question: userQuestion,
+        useLocal: isLocalMode 
       });
-
-      // Start the reveal
+  
       typeWriter(response);
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', content: `⚠️ The connection was severed: ${err}` }]);
@@ -67,6 +70,18 @@ export default function Oracle() {
 
   return (
     <div className="w-full max-w-3xl flex flex-col h-[85vh]">
+    <div className="flex items-center gap-2 mb-4 px-4 py-2 bg-slate-900/50 rounded-full border border-slate-800">
+      <div className={`w-2 h-2 rounded-full ${isLocalMode ? 'bg-green-500 animate-pulse' : 'bg-blue-500'}`} />
+      <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400">
+        {isLocalMode ? 'Local Oracle (Offline)' : 'Cloud Oracle (Gemini)'}
+      </span>
+      <button 
+        onClick={() => setIsLocalMode(!isLocalMode)}
+        className="ml-auto text-[10px] text-blue-400 hover:text-blue-300 font-bold"
+      >
+        SWITCH
+      </button>
+    </div>
       {/* 1. Added 'no-scrollbar' to hide the ugly bar */}
       <div className="flex-1 overflow-y-auto space-y-6 px-4 no-scrollbar pb-10">
         {messages.length === 0 && !loading && (

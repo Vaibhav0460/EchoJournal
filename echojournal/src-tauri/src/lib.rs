@@ -1,15 +1,16 @@
 use dotenvy::dotenv;
 use std::env;
 use serde::{Deserialize, Serialize};
-use tauri::command;
-use tokio::time::{sleep, Duration};
-use chrono::{Local, Datelike, NaiveDate};
+use chrono::{Local, NaiveDate};
 mod tags;
 pub mod export;
 mod vector_store;
 use tauri::Manager;
 use notify::{Watcher, RecursiveMode, Config, EventKind};
-use std::path::Path;
+mod oracle_engine; // Declare the new module
+use crate::oracle_engine::OracleEngine;
+use std::sync::{Arc, Mutex};
+use tauri::State;
 
 #[derive(Serialize)]
 struct GeminiRequest { contents: Vec<Content>, }
@@ -32,10 +33,10 @@ struct ResponseContent { parts: Vec<ResponsePart>, }
 #[derive(Deserialize)]
 struct ResponsePart { text: String, }
 
-#[derive(Serialize, Deserialize)]
-pub struct RefinedOutput {
-    pub text: String,
-    pub tag: String,
+#[derive(serde::Deserialize, serde::Serialize)]
+struct RefinedEntry {
+    tag: String,
+    content: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -147,22 +148,14 @@ async fn get_all_entries(journal_path: String) -> Result<Vec<RawEntry>, String> 
 }
 
 #[tauri::command]
-async fn ask_oracle(question: String, app_handle: tauri::AppHandle) -> Result<String, String> {
+async fn ask_oracle(question: String, app_handle: tauri::AppHandle, use_local: bool) -> Result<String, String> {
     use tauri::Manager;
     dotenv().ok();
-    
-    // 1. Auth check
-    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not found in .env".to_string())?;
-
-    // 2. Local Semantic Search (The "Retrieval" part of RAG)
     let db_path = app_handle.path().app_data_dir().unwrap();
     let relevant_entries = crate::vector_store::search_similar_entries(&question, &db_path, 5)?;
-    
     if relevant_entries.is_empty() {
         return Ok("Your memory is currently blank. Try syncing your journal before consulting the Oracle.".into());
     }
-
-    // 3. Construct the Augmented Prompt
     let context_data = relevant_entries.join("\n---\n");
     let prompt = format!(
         "SYSTEM: You are the 'Echo Oracle'. Answer using ONLY the provided journal data. 
@@ -172,25 +165,29 @@ async fn ask_oracle(question: String, app_handle: tauri::AppHandle) -> Result<St
         context_data, question
     );
 
-    // 4. API Configuration (Using 1.5-flash for stability)
+    if use_local {
+        // Fix for Error #4: Explicitly telling Rust what 'engine_state' is
+        let engine_state: State<'_, Arc<Mutex<OracleEngine>>> = app_handle.state();
+        
+        let engine = engine_state.lock().map_err(|e| e.to_string())?;
+        // We pass the prompt we just built
+        return engine.generate_response(&prompt, &question);
+    }
+
+    // --- Gemini Path ---
+    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "Key not found".to_string())?;
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
         api_key
     );
 
     let body = GeminiRequest {
-        contents: vec![Content { parts: vec![Part { text: prompt }] }],
+        contents: vec![Content { parts: vec![Part { text: prompt }] }], // Now 'prompt' exists!
     };
 
-    // 5. Single Network Call
     let client = reqwest::Client::new();
-    let res = client.post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Network Error: {}", e))?;
+    let res = client.post(&url).json(&body).send().await.map_err(|e| format!("Network Error: {}", e))?;
 
-    // 6. Robust Error Handling
     if !res.status().is_success() {
         let status = res.status();
         let err_text = res.text().await.unwrap_or_default();
@@ -200,7 +197,7 @@ async fn ask_oracle(question: String, app_handle: tauri::AppHandle) -> Result<St
     let json: GeminiResponse = res.json().await.map_err(|e| format!("JSON Decode Error: {}", e))?;
     
     if json.candidates.is_empty() || json.candidates[0].content.parts.is_empty() {
-        return Ok("The Oracle is clouded. No candidates were returned for this inquiry.".to_string());
+        return Ok("The Oracle is clouded.".to_string());
     }
 
     Ok(json.candidates[0].content.parts[0].text.trim().to_string())
@@ -224,56 +221,84 @@ async fn sync_vectors(journal_path: String, app_handle: tauri::AppHandle) -> Res
 }
 
 #[tauri::command]
-fn is_date_locked(target_date_str: String) -> Result<bool, String> {
+fn is_date_locked(target_date_str: Option<String>, date: Option<String>) -> Result<bool, String> {
     let now = Local::now().date_naive();
-    let target_date = NaiveDate::parse_from_str(&target_date_str, "%Y-%m-%d")
+    let date_str = target_date_str
+        .or(date)
+        .ok_or_else(|| "Missing date".to_string())?;
+    let target_date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
         .map_err(|_| "Invalid date format".to_string())?;
     let diff = now.signed_duration_since(target_date).num_days();
     Ok(diff > 7 || diff < 0)
 }
 
 #[tauri::command]
-async fn refine_thought(input: String, settings_json: String) -> Result<RefinedOutput, String> {
-    dotenv().ok();
-    let api_key = env::var("GEMINI_API_KEY").map_err(|_| "GEMINI_API_KEY not found".to_string())?;
-    
-    let tag_list: Vec<String> = tags::get_tag_registry().iter().map(|t| t.id.clone()).collect();
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        api_key
-    );
+async fn refine_thought(thought: String, app_handle: tauri::AppHandle, use_local: bool) -> Result<RefinedEntry, String> {
+    let system_prompt = "Refine this thought into a journal entry.\nReturn ONLY valid JSON (no markdown, no extra text) in this format:\n{\"tag\":\"Category\",\"content\":\"Refinedtext\"}\nMake sure the response ends with a closing '}' character.";
+    let raw_json = if use_local {
+        // --- Local Path ---
+        let engine_state: tauri::State<'_, Arc<Mutex<OracleEngine>>> = app_handle.state();
+        let engine = engine_state.lock().map_err(|e| e.to_string())?;
+        engine.generate_response(system_prompt, &thought)?
+    } else {
+        // --- Gemini Path ---
+        dotenvy::dotenv().ok();
+        let api_key = std::env::var("GEMINI_API_KEY").map_err(|_| "Key not found".to_string())?;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={}",
+            api_key
+        );
 
-    let prompt = format!(
-        "USER_SETTINGS: {settings}
-         VALID_TAGS: {tags:?}
+        let body = GeminiRequest {
+            contents: vec![Content { parts: vec![Part { text: format!("{}\n\nThought: {}", system_prompt, thought) }] }],
+        };
 
-         GOAL: Process the journal entry.
-         1. LITERAL MODE: If input is in quotes, return text exactly as is (no quotes).
-         2. REFINED MODE: If no quotes, rewrite as a 1-sentence bullet point using the tone specified in USER_SETTINGS for the detected tag.
-         3. CATEGORIZATION: Select the most appropriate tag from VALID_TAGS.
+        let client = reqwest::Client::new();
+        let res = client.post(&url).json(&body).send().await.map_err(|e| e.to_string())?;
+        let json_res: GeminiResponse = res.json().await.map_err(|e| e.to_string())?;
+        
+        json_res.candidates.get(0)
+            .and_then(|c| c.content.parts.get(0))
+            .map(|p| p.text.clone())
+            .ok_or("Gemini returned an empty response")?
+    };
 
-         RETURN JSON ONLY: {{\"text\": \"...\", \"tag\": \"...\"}}
-         INPUT: {input}",
-        settings = settings_json,
-        tags = tag_list,
-        input = input
-    );
+    // Clean and robustly parse (local LLMs sometimes truncate the final brace).
+    let cleaned = raw_json
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
 
-    let client = reqwest::Client::new();
-    let res = client.post(&url).json(&GeminiRequest {
-        contents: vec![Content { parts: vec![Part { text: prompt }] }]
-    }).send().await.map_err(|e| e.to_string())?;
+    let try_parse = |s: &str| serde_json::from_str::<RefinedEntry>(s);
 
-    let json: GeminiResponse = res.json().await.map_err(|e| e.to_string())?;
-    let raw_output = json.candidates[0].content.parts[0].text.trim();
-    
-    
-    let clean_json = raw_output.trim_start_matches("```json").trim_end_matches("```").trim();
+    if let Ok(v) = try_parse(cleaned) {
+        return Ok(v);
+    }
 
-    let output: RefinedOutput = serde_json::from_str(clean_json)
-        .map_err(|_| format!("AI Parse Error: {}", clean_json))?;
+    // Attempt 2: extract JSON object region.
+    if let Some(start) = cleaned.find('{') {
+        let slice = &cleaned[start..];
+        if let Some(end) = slice.rfind('}') {
+            let candidate = &slice[..=end];
+            if let Ok(v) = try_parse(candidate) {
+                return Ok(v);
+            }
+        } else {
+            // Attempt 3: missing closing brace; append one.
+            let mut candidate = slice.to_string();
+            candidate.push('}');
+            if let Ok(v) = try_parse(&candidate) {
+                return Ok(v);
+            }
+        }
+    }
 
-    Ok(output)
+    Err(format!(
+        "JSON Parse Error: model did not return valid JSON. Raw output: {}",
+        cleaned
+    ))
 }
 
 #[tauri::command]
@@ -311,6 +336,17 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             setup_file_watcher(app.handle().clone());
+    
+            // We will place the model in the app_data_dir/models folder
+            let app_data = app.path().app_data_dir().unwrap();
+            let model_path = app_data.join("models").join("oracle-model.gguf");
+
+            if model_path.exists() {
+                if let Ok(engine) = OracleEngine::new(&model_path) {
+                    app.manage(Arc::new(Mutex::new(engine)));
+                }
+            }
+            
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![refine_thought, is_date_locked, get_all_entries, ask_oracle, export_journal, sync_vectors])
