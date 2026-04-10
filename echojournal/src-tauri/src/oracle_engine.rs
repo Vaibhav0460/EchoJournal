@@ -75,17 +75,6 @@ impl OracleEngine {
                 .map_err(|e| e.to_string())?;
                 
             response_text.push_str(&piece);
-
-            // If the model is responding with a JSON object, stop as soon as we have a complete one.
-            // This reduces the chance we run out of tokens and end up with truncated JSON.
-            let trimmed = response_text.trim_end();
-            if trimmed.starts_with('{')
-                && trimmed.ends_with('}')
-                && trimmed.contains("\"tag\"")
-                && trimmed.contains("\"content\"")
-            {
-                break;
-            }
     
             batch.clear();
             let _ = batch.add(token, n_cur, &[0], true);
